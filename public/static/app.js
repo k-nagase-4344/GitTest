@@ -503,3 +503,336 @@ function getFieldLabel(fieldName) {
   }
   return labels[fieldName] || fieldName
 }
+
+// ========== ページ切り替え ==========
+function showPage(page) {
+  // ナビゲーションのハイライト
+  document.querySelectorAll('[id^="nav"]').forEach(btn => {
+    btn.className = 'px-3 py-1 rounded hover:bg-gray-100'
+  })
+  document.getElementById('nav' + page.charAt(0).toUpperCase() + page.slice(1)).className = 'px-3 py-1 rounded bg-blue-100 text-blue-700'
+  
+  // ページ表示切り替え
+  document.getElementById('issuesPage').classList.add('hidden')
+  document.getElementById('projectsPage').classList.add('hidden')
+  document.getElementById('usersPage').classList.add('hidden')
+  
+  // フィルタとボタンの表示制御
+  const filterSection = document.querySelector('.max-w-7xl.mx-auto.px-4.sm\\:px-6.lg\\:px-8.py-4:has(#statusFilter)')
+  const createIssueBtn = document.getElementById('createIssueBtn')
+  const projectFilter = document.getElementById('projectFilter')
+  
+  if (page === 'issues') {
+    document.getElementById('issuesPage').classList.remove('hidden')
+    if (filterSection) filterSection.classList.remove('hidden')
+    if (createIssueBtn) createIssueBtn.classList.remove('hidden')
+    if (projectFilter) projectFilter.parentElement.classList.remove('hidden')
+    loadIssues()
+  } else if (page === 'projects') {
+    document.getElementById('projectsPage').classList.remove('hidden')
+    if (filterSection) filterSection.classList.add('hidden')
+    if (createIssueBtn) createIssueBtn.classList.add('hidden')
+    if (projectFilter) projectFilter.parentElement.classList.add('hidden')
+    loadProjectsList()
+  } else if (page === 'users') {
+    document.getElementById('usersPage').classList.remove('hidden')
+    if (filterSection) filterSection.classList.add('hidden')
+    if (createIssueBtn) createIssueBtn.classList.add('hidden')
+    if (projectFilter) projectFilter.parentElement.classList.add('hidden')
+    loadUsersList()
+  }
+}
+
+// ========== 通知機能 ==========
+let notificationInterval = null
+
+// 通知の初期化
+document.addEventListener('DOMContentLoaded', () => {
+  loadNotifications()
+  // 30秒ごとに通知を更新
+  notificationInterval = setInterval(loadNotifications, 30000)
+})
+
+async function loadNotifications() {
+  try {
+    const response = await axios.get(`/api/notifications?user_id=${currentUser.id}&unread_only=true`)
+    const notifications = response.data
+    
+    const badge = document.getElementById('notificationBadge')
+    if (notifications.length > 0) {
+      badge.textContent = notifications.length
+      badge.classList.remove('hidden')
+    } else {
+      badge.classList.add('hidden')
+    }
+  } catch (error) {
+    console.error('通知の読み込みに失敗:', error)
+  }
+}
+
+function toggleNotifications() {
+  const panel = document.getElementById('notificationPanel')
+  if (panel.classList.contains('hidden')) {
+    showNotifications()
+  } else {
+    panel.classList.add('hidden')
+  }
+}
+
+async function showNotifications() {
+  try {
+    const response = await axios.get(`/api/notifications?user_id=${currentUser.id}`)
+    const notifications = response.data
+    
+    const list = document.getElementById('notificationList')
+    if (notifications.length === 0) {
+      list.innerHTML = '<p class="p-4 text-gray-500 text-sm text-center">通知はありません</p>'
+    } else {
+      list.innerHTML = notifications.map(n => `
+        <div class="p-3 hover:bg-gray-50 cursor-pointer ${n.is_read ? 'opacity-60' : ''}" onclick="markAsRead(${n.id}, ${n.issue_id})">
+          <div class="flex items-start justify-between">
+            <div class="flex-1">
+              <p class="font-medium text-sm">${escapeHtml(n.title)}</p>
+              <p class="text-sm text-gray-600">${escapeHtml(n.message)}</p>
+              <p class="text-xs text-gray-400 mt-1">${formatDate(n.created_at)}</p>
+            </div>
+            ${!n.is_read ? '<div class="w-2 h-2 bg-blue-500 rounded-full ml-2 mt-1"></div>' : ''}
+          </div>
+        </div>
+      `).join('')
+    }
+    
+    document.getElementById('notificationPanel').classList.remove('hidden')
+  } catch (error) {
+    console.error('通知の読み込みに失敗:', error)
+  }
+}
+
+async function markAsRead(notificationId, issueId) {
+  try {
+    await axios.put(`/api/notifications/${notificationId}/read`)
+    if (issueId) {
+      showDetail(issueId)
+    }
+    await loadNotifications()
+    await showNotifications()
+  } catch (error) {
+    console.error('通知の既読化に失敗:', error)
+  }
+}
+
+async function markAllAsRead() {
+  try {
+    await axios.put('/api/notifications/read-all', { user_id: currentUser.id })
+    await loadNotifications()
+    await showNotifications()
+  } catch (error) {
+    console.error('通知の一括既読化に失敗:', error)
+  }
+}
+
+// ========== プロジェクト管理 ==========
+async function loadProjectsList() {
+  try {
+    const response = await axios.get('/api/projects')
+    projects = response.data
+    
+    const container = document.getElementById('projectsList')
+    if (projects.length === 0) {
+      container.innerHTML = '<p class="text-gray-500 text-center py-4">プロジェクトがありません</p>'
+      return
+    }
+    
+    container.innerHTML = projects.map(p => `
+      <div class="border rounded-lg p-4 hover:shadow-md transition-shadow">
+        <div class="flex justify-between items-start">
+          <div class="flex-1">
+            <h3 class="text-lg font-semibold">${escapeHtml(p.name)}</h3>
+            ${p.description ? `<p class="text-gray-600 mt-1">${escapeHtml(p.description)}</p>` : ''}
+            <p class="text-sm text-gray-400 mt-2">作成日: ${formatDate(p.created_at)}</p>
+          </div>
+          <div class="flex gap-2 ml-4">
+            <button onclick="editProject(${p.id})" class="text-blue-600 hover:text-blue-800">
+              <i class="fas fa-edit"></i>
+            </button>
+            <button onclick="deleteProject(${p.id})" class="text-red-600 hover:text-red-800">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    `).join('')
+  } catch (error) {
+    console.error('プロジェクト一覧の読み込みに失敗:', error)
+    alert('プロジェクト一覧の読み込みに失敗しました')
+  }
+}
+
+function showCreateProjectModal() {
+  document.getElementById('projectModalTitle').textContent = '新規プロジェクト'
+  document.getElementById('projectForm').reset()
+  document.getElementById('projectId').value = ''
+  document.getElementById('projectModal').classList.remove('hidden')
+}
+
+async function editProject(id) {
+  const project = projects.find(p => p.id === id)
+  if (!project) return
+  
+  document.getElementById('projectModalTitle').textContent = 'プロジェクト編集'
+  document.getElementById('projectId').value = project.id
+  document.getElementById('projectName').value = project.name
+  document.getElementById('projectDescription').value = project.description || ''
+  document.getElementById('projectModal').classList.remove('hidden')
+}
+
+function hideProjectModal() {
+  document.getElementById('projectModal').classList.add('hidden')
+}
+
+document.getElementById('projectForm').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  
+  const id = document.getElementById('projectId').value
+  const data = {
+    name: document.getElementById('projectName').value,
+    description: document.getElementById('projectDescription').value
+  }
+  
+  try {
+    if (id) {
+      await axios.put(`/api/projects/${id}`, data)
+      alert('プロジェクトを更新しました')
+    } else {
+      await axios.post('/api/projects', data)
+      alert('プロジェクトを作成しました')
+    }
+    hideProjectModal()
+    await loadMasterData()
+    await loadProjectsList()
+  } catch (error) {
+    console.error('プロジェクトの保存に失敗:', error)
+    alert('プロジェクトの保存に失敗しました')
+  }
+})
+
+async function deleteProject(id) {
+  if (!confirm('このプロジェクトを削除してもよろしいですか？')) {
+    return
+  }
+  
+  try {
+    await axios.delete(`/api/projects/${id}`)
+    alert('プロジェクトを削除しました')
+    await loadMasterData()
+    await loadProjectsList()
+  } catch (error) {
+    console.error('プロジェクトの削除に失敗:', error)
+    alert(error.response?.data?.error || 'プロジェクトの削除に失敗しました')
+  }
+}
+
+// ========== ユーザー管理 ==========
+async function loadUsersList() {
+  try {
+    const response = await axios.get('/api/users')
+    users = response.data
+    
+    const container = document.getElementById('usersList')
+    if (users.length === 0) {
+      container.innerHTML = '<p class="text-gray-500 text-center py-4">ユーザーがいません</p>'
+      return
+    }
+    
+    container.innerHTML = users.map(u => `
+      <div class="border rounded-lg p-4 hover:shadow-md transition-shadow">
+        <div class="flex justify-between items-start">
+          <div class="flex-1">
+            <h3 class="text-lg font-semibold">${escapeHtml(u.display_name)}</h3>
+            <p class="text-gray-600">@${escapeHtml(u.username)}</p>
+            <p class="text-gray-600">
+              <i class="fas fa-envelope mr-1"></i>${escapeHtml(u.email)}
+            </p>
+          </div>
+          <div class="flex gap-2 ml-4">
+            <button onclick="editUser(${u.id})" class="text-blue-600 hover:text-blue-800">
+              <i class="fas fa-edit"></i>
+            </button>
+            <button onclick="deleteUser(${u.id})" class="text-red-600 hover:text-red-800">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    `).join('')
+  } catch (error) {
+    console.error('ユーザー一覧の読み込みに失敗:', error)
+    alert('ユーザー一覧の読み込みに失敗しました')
+  }
+}
+
+function showCreateUserModal() {
+  document.getElementById('userModalTitle').textContent = '新規ユーザー'
+  document.getElementById('userForm').reset()
+  document.getElementById('userId').value = ''
+  document.getElementById('userModal').classList.remove('hidden')
+}
+
+async function editUser(id) {
+  const user = users.find(u => u.id === id)
+  if (!user) return
+  
+  document.getElementById('userModalTitle').textContent = 'ユーザー編集'
+  document.getElementById('userId').value = user.id
+  document.getElementById('userUsername').value = user.username
+  document.getElementById('userEmail').value = user.email
+  document.getElementById('userDisplayName').value = user.display_name
+  document.getElementById('userModal').classList.remove('hidden')
+}
+
+function hideUserModal() {
+  document.getElementById('userModal').classList.add('hidden')
+}
+
+document.getElementById('userForm').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  
+  const id = document.getElementById('userId').value
+  const data = {
+    username: document.getElementById('userUsername').value,
+    email: document.getElementById('userEmail').value,
+    display_name: document.getElementById('userDisplayName').value
+  }
+  
+  try {
+    if (id) {
+      await axios.put(`/api/users/${id}`, data)
+      alert('ユーザーを更新しました')
+    } else {
+      await axios.post('/api/users', data)
+      alert('ユーザーを作成しました')
+    }
+    hideUserModal()
+    await loadMasterData()
+    await loadUsersList()
+  } catch (error) {
+    console.error('ユーザーの保存に失敗:', error)
+    alert(error.response?.data?.error || 'ユーザーの保存に失敗しました')
+  }
+})
+
+async function deleteUser(id) {
+  if (!confirm('このユーザーを削除してもよろしいですか？')) {
+    return
+  }
+  
+  try {
+    await axios.delete(`/api/users/${id}`)
+    alert('ユーザーを削除しました')
+    await loadMasterData()
+    await loadUsersList()
+  } catch (error) {
+    console.error('ユーザーの削除に失敗:', error)
+    alert(error.response?.data?.error || 'ユーザーの削除に失敗しました')
+  }
+}

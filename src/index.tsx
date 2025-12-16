@@ -159,7 +159,21 @@ app.post('/api/issues', async (c) => {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).bind(project_id, title, description, status_id, priority_id, assignee_id, reporter_id).run()
 
-  return c.json({ id: result.meta.last_row_id })
+  const issueId = result.meta.last_row_id as number
+
+  // 担当者に通知
+  if (assignee_id && assignee_id !== reporter_id) {
+    await createNotification(
+      c.env.DB,
+      assignee_id,
+      issueId,
+      'assigned',
+      '新しい案件が割り当てられました',
+      `案件「${title}」があなたに割り当てられました`
+    )
+  }
+
+  return c.json({ id: issueId })
 })
 
 // 案件更新
@@ -202,6 +216,44 @@ app.put('/api/issues/:id', async (c) => {
     `).bind(id, user_id, h.field, h.old, h.new).run()
   }
 
+  // 通知を送信
+  // 担当者が変更された場合
+  if (current.assignee_id !== assignee_id && assignee_id) {
+    await createNotification(
+      c.env.DB,
+      assignee_id,
+      parseInt(id),
+      'assigned',
+      '案件が割り当てられました',
+      `案件「${title}」があなたに割り当てられました`
+    )
+  }
+
+  // ステータスが変更された場合、担当者に通知
+  if (current.status_id !== status_id && current.assignee_id && current.assignee_id !== user_id) {
+    const statusName = await c.env.DB.prepare('SELECT name FROM issue_statuses WHERE id = ?').bind(status_id).first()
+    await createNotification(
+      c.env.DB,
+      current.assignee_id as number,
+      parseInt(id),
+      'status_changed',
+      '案件のステータスが変更されました',
+      `案件「${title}」のステータスが「${statusName?.name}」に変更されました`
+    )
+  }
+
+  // 報告者にも通知（自分が変更した場合を除く）
+  if (histories.length > 0 && current.reporter_id && current.reporter_id !== user_id) {
+    await createNotification(
+      c.env.DB,
+      current.reporter_id as number,
+      parseInt(id),
+      'updated',
+      '案件が更新されました',
+      `案件「${title}」が更新されました`
+    )
+  }
+
   return c.json({ success: true })
 })
 
@@ -221,6 +273,35 @@ app.post('/api/issues/:id/comments', async (c) => {
     INSERT INTO comments (issue_id, user_id, content)
     VALUES (?, ?, ?)
   `).bind(id, user_id, content).run()
+
+  // 案件情報を取得
+  const issue = await c.env.DB.prepare('SELECT title, assignee_id, reporter_id FROM issues WHERE id = ?').bind(id).first()
+  
+  if (issue) {
+    // 担当者に通知（自分以外）
+    if (issue.assignee_id && issue.assignee_id !== user_id) {
+      await createNotification(
+        c.env.DB,
+        issue.assignee_id as number,
+        parseInt(id),
+        'comment',
+        '新しいコメントが追加されました',
+        `案件「${issue.title}」に新しいコメントが追加されました`
+      )
+    }
+    
+    // 報告者に通知（自分以外、担当者と重複しない場合）
+    if (issue.reporter_id && issue.reporter_id !== user_id && issue.reporter_id !== issue.assignee_id) {
+      await createNotification(
+        c.env.DB,
+        issue.reporter_id as number,
+        parseInt(id),
+        'comment',
+        '新しいコメントが追加されました',
+        `案件「${issue.title}」に新しいコメントが追加されました`
+      )
+    }
+  }
 
   return c.json({ id: result.meta.last_row_id })
 })
@@ -291,6 +372,135 @@ app.get('/api/users', async (c) => {
   return c.json(results)
 })
 
+// ユーザー作成
+app.post('/api/users', async (c) => {
+  const { username, email, display_name } = await c.req.json()
+  
+  // メールアドレスの重複チェック
+  const existing = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first()
+  if (existing) {
+    return c.json({ error: 'このメールアドレスは既に登録されています' }, 400)
+  }
+
+  const result = await c.env.DB.prepare(
+    'INSERT INTO users (username, email, display_name) VALUES (?, ?, ?)'
+  ).bind(username, email, display_name).run()
+  
+  return c.json({ id: result.meta.last_row_id, username, email, display_name })
+})
+
+// ユーザー更新
+app.put('/api/users/:id', async (c) => {
+  const id = c.req.param('id')
+  const { username, email, display_name } = await c.req.json()
+  
+  // メールアドレスの重複チェック（自分以外）
+  const existing = await c.env.DB.prepare('SELECT id FROM users WHERE email = ? AND id != ?').bind(email, id).first()
+  if (existing) {
+    return c.json({ error: 'このメールアドレスは既に使用されています' }, 400)
+  }
+
+  await c.env.DB.prepare(
+    'UPDATE users SET username = ?, email = ?, display_name = ? WHERE id = ?'
+  ).bind(username, email, display_name, id).run()
+  
+  return c.json({ success: true })
+})
+
+// ユーザー削除
+app.delete('/api/users/:id', async (c) => {
+  const id = c.req.param('id')
+  
+  // このユーザーが担当している案件をチェック
+  const assignedIssues = await c.env.DB.prepare(
+    'SELECT COUNT(*) as count FROM issues WHERE assignee_id = ?'
+  ).bind(id).first()
+  
+  if (assignedIssues && (assignedIssues.count as number) > 0) {
+    return c.json({ 
+      error: `このユーザーは${assignedIssues.count}件の案件に担当者として割り当てられています。先に案件の担当者を変更してください。` 
+    }, 400)
+  }
+
+  await c.env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id).run()
+  return c.json({ success: true })
+})
+
+// プロジェクト更新
+app.put('/api/projects/:id', async (c) => {
+  const id = c.req.param('id')
+  const { name, description } = await c.req.json()
+  
+  await c.env.DB.prepare(
+    'UPDATE projects SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+  ).bind(name, description, id).run()
+  
+  return c.json({ success: true })
+})
+
+// プロジェクト削除
+app.delete('/api/projects/:id', async (c) => {
+  const id = c.req.param('id')
+  
+  // このプロジェクトの案件をチェック
+  const issues = await c.env.DB.prepare(
+    'SELECT COUNT(*) as count FROM issues WHERE project_id = ?'
+  ).bind(id).first()
+  
+  if (issues && (issues.count as number) > 0) {
+    return c.json({ 
+      error: `このプロジェクトには${issues.count}件の案件が登録されています。先に案件を削除または移動してください。` 
+    }, 400)
+  }
+
+  await c.env.DB.prepare('DELETE FROM projects WHERE id = ?').bind(id).run()
+  return c.json({ success: true })
+})
+
+// 通知一覧取得
+app.get('/api/notifications', async (c) => {
+  const userId = c.req.query('user_id')
+  const unreadOnly = c.req.query('unread_only') === 'true'
+  
+  let query = 'SELECT * FROM notifications WHERE user_id = ?'
+  if (unreadOnly) {
+    query += ' AND is_read = 0'
+  }
+  query += ' ORDER BY created_at DESC LIMIT 50'
+  
+  const { results } = await c.env.DB.prepare(query).bind(userId).all()
+  return c.json(results)
+})
+
+// 通知を既読にする
+app.put('/api/notifications/:id/read', async (c) => {
+  const id = c.req.param('id')
+  await c.env.DB.prepare('UPDATE notifications SET is_read = 1 WHERE id = ?').bind(id).run()
+  return c.json({ success: true })
+})
+
+// すべての通知を既読にする
+app.put('/api/notifications/read-all', async (c) => {
+  const { user_id } = await c.req.json()
+  await c.env.DB.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').bind(user_id).run()
+  return c.json({ success: true })
+})
+
+// 通知作成ヘルパー関数
+async function createNotification(
+  db: D1Database, 
+  userId: number, 
+  issueId: number | null, 
+  type: string, 
+  title: string, 
+  message: string
+) {
+  await db.prepare(`
+    INSERT INTO notifications (user_id, issue_id, type, title, message)
+    VALUES (?, ?, ?, ?, ?)
+  `).bind(userId, issueId, type, title, message).run()
+}
+
 // ==================== Frontend ====================
 
 app.get('/', (c) => {
@@ -310,15 +520,43 @@ app.get('/', (c) => {
         <header class="bg-white shadow">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
                 <div class="flex justify-between items-center">
-                    <h1 class="text-2xl font-bold text-gray-900">
-                        <i class="fas fa-bug mr-2 text-red-500"></i>
-                        不具合管理システム
-                    </h1>
+                    <div class="flex items-center gap-4">
+                        <h1 class="text-2xl font-bold text-gray-900">
+                            <i class="fas fa-bug mr-2 text-red-500"></i>
+                            不具合管理システム
+                        </h1>
+                        <nav class="flex gap-2">
+                            <button onclick="showPage('issues')" id="navIssues" class="px-3 py-1 rounded bg-blue-100 text-blue-700">
+                                <i class="fas fa-list mr-1"></i>案件
+                            </button>
+                            <button onclick="showPage('projects')" id="navProjects" class="px-3 py-1 rounded hover:bg-gray-100">
+                                <i class="fas fa-folder mr-1"></i>プロジェクト
+                            </button>
+                            <button onclick="showPage('users')" id="navUsers" class="px-3 py-1 rounded hover:bg-gray-100">
+                                <i class="fas fa-users mr-1"></i>ユーザー
+                            </button>
+                        </nav>
+                    </div>
                     <div class="flex items-center gap-4">
                         <select id="projectFilter" class="px-3 py-2 border rounded-lg">
                             <option value="">すべてのプロジェクト</option>
                         </select>
-                        <button onclick="showCreateModal()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                        <div class="relative">
+                            <button onclick="toggleNotifications()" class="relative p-2 hover:bg-gray-100 rounded-lg">
+                                <i class="fas fa-bell text-xl"></i>
+                                <span id="notificationBadge" class="hidden absolute top-0 right-0 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">0</span>
+                            </button>
+                            <div id="notificationPanel" class="hidden absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-lg border max-h-96 overflow-y-auto z-50">
+                                <div class="p-3 border-b flex justify-between items-center">
+                                    <h3 class="font-semibold">通知</h3>
+                                    <button onclick="markAllAsRead()" class="text-sm text-blue-600 hover:underline">すべて既読</button>
+                                </div>
+                                <div id="notificationList" class="divide-y">
+                                    <p class="p-4 text-gray-500 text-sm text-center">通知はありません</p>
+                                </div>
+                            </div>
+                        </div>
+                        <button onclick="showCreateModal()" id="createIssueBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
                             <i class="fas fa-plus mr-2"></i>新規案件
                         </button>
                     </div>
@@ -357,9 +595,39 @@ app.get('/', (c) => {
         </div>
 
         <!-- 案件一覧 -->
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div id="issuesPage" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
             <div id="issuesList" class="space-y-3">
                 <!-- 案件カードがここに動的に挿入される -->
+            </div>
+        </div>
+
+        <!-- プロジェクト管理画面 -->
+        <div id="projectsPage" class="hidden max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div class="bg-white rounded-lg shadow p-6 mb-4">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">プロジェクト管理</h2>
+                    <button onclick="showCreateProjectModal()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                        <i class="fas fa-plus mr-2"></i>新規プロジェクト
+                    </button>
+                </div>
+                <div id="projectsList" class="space-y-3">
+                    <!-- プロジェクトリストがここに挿入される -->
+                </div>
+            </div>
+        </div>
+
+        <!-- ユーザー管理画面 -->
+        <div id="usersPage" class="hidden max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div class="bg-white rounded-lg shadow p-6 mb-4">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">ユーザー管理</h2>
+                    <button onclick="showCreateUserModal()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                        <i class="fas fa-plus mr-2"></i>新規ユーザー
+                    </button>
+                </div>
+                <div id="usersList" class="space-y-3">
+                    <!-- ユーザーリストがここに挿入される -->
+                </div>
             </div>
         </div>
 
@@ -425,6 +693,66 @@ app.get('/', (c) => {
                     <div id="detailContent">
                         <!-- 詳細がここに動的に挿入される -->
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- プロジェクト作成/編集モーダル -->
+        <div id="projectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-lg max-w-lg w-full">
+                <div class="p-6">
+                    <h2 id="projectModalTitle" class="text-xl font-bold mb-4">新規プロジェクト</h2>
+                    <form id="projectForm" class="space-y-4">
+                        <input type="hidden" id="projectId">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">プロジェクト名 *</label>
+                            <input type="text" id="projectName" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">説明</label>
+                            <textarea id="projectDescription" rows="4" class="w-full px-3 py-2 border rounded-lg"></textarea>
+                        </div>
+                        <div class="flex justify-end gap-2 pt-4">
+                            <button type="button" onclick="hideProjectModal()" class="px-4 py-2 border rounded-lg hover:bg-gray-50">
+                                キャンセル
+                            </button>
+                            <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                                保存
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- ユーザー作成/編集モーダル -->
+        <div id="userModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-lg max-w-lg w-full">
+                <div class="p-6">
+                    <h2 id="userModalTitle" class="text-xl font-bold mb-4">新規ユーザー</h2>
+                    <form id="userForm" class="space-y-4">
+                        <input type="hidden" id="userId">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">ユーザー名 *</label>
+                            <input type="text" id="userUsername" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">メールアドレス *</label>
+                            <input type="email" id="userEmail" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">表示名 *</label>
+                            <input type="text" id="userDisplayName" required class="w-full px-3 py-2 border rounded-lg">
+                        </div>
+                        <div class="flex justify-end gap-2 pt-4">
+                            <button type="button" onclick="hideUserModal()" class="px-4 py-2 border rounded-lg hover:bg-gray-50">
+                                キャンセル
+                            </button>
+                            <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                                保存
+                            </button>
+                        </div>
+                    </form>
                 </div>
             </div>
         </div>
