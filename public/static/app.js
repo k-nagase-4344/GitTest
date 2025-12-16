@@ -5,6 +5,7 @@ let priorities = []
 let users = []
 let issues = []
 let currentUser = { id: 1, display_name: '管理者' } // 簡易的なユーザー設定
+let viewMode = 'list' // 表示モード: 'list' or 'card' (デフォルトはリスト)
 
 // 初期化
 document.addEventListener('DOMContentLoaded', async () => {
@@ -161,49 +162,124 @@ function renderIssues() {
     return
   }
 
-  container.innerHTML = issues.map(issue => `
-    <div class="bg-white rounded-lg shadow hover:shadow-md transition-shadow cursor-pointer" onclick="showDetail(${issue.id})">
-      <div class="p-4">
-        <div class="flex items-start justify-between">
-          <div class="flex-1">
-            <div class="flex items-center gap-2 mb-2">
-              <span class="text-sm text-gray-500">#${issue.id}</span>
-              <span class="px-2 py-1 text-xs rounded-full" style="background-color: ${issue.status_color}20; color: ${issue.status_color}">
-                ${issue.status_name}
-              </span>
-              <span class="px-2 py-1 text-xs rounded-full" style="background-color: ${issue.priority_color}20; color: ${issue.priority_color}">
-                ${issue.priority_name}
-              </span>
-            </div>
-            <h3 class="text-lg font-semibold text-gray-900 mb-1">${escapeHtml(issue.title)}</h3>
-            ${issue.description ? `<p class="text-sm text-gray-600 line-clamp-2">${escapeHtml(issue.description)}</p>` : ''}
-          </div>
-          <div class="ml-4 text-right">
-            <div class="text-sm text-gray-600 mb-1">
-              <i class="fas fa-folder mr-1"></i>
-              ${issue.project_name}
-            </div>
-            ${issue.assignee_name ? `
-              <div class="text-sm text-gray-600">
-                <i class="fas fa-user mr-1"></i>
-                ${issue.assignee_name}
+  if (viewMode === 'list') {
+    // リスト表示
+    container.innerHTML = `
+      <div class="bg-white rounded-lg shadow overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">タイトル</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ステータス</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">優先度</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">担当者</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">プロジェクト</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">作成日</th>
+            </tr>
+          </thead>
+          <tbody class="bg-white divide-y divide-gray-200">
+            ${issues.map(issue => `
+              <tr class="hover:bg-gray-50 cursor-pointer" onclick="showDetail(${issue.id})">
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">#${issue.id}</td>
+                <td class="px-4 py-3 text-sm">
+                  <div class="font-medium text-gray-900">${escapeHtml(issue.title)}</div>
+                  ${issue.description ? `<div class="text-gray-500 truncate max-w-md">${escapeHtml(issue.description)}</div>` : ''}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap">
+                  <span class="px-2 py-1 text-xs rounded-full" style="background-color: ${issue.status_color}20; color: ${issue.status_color}">
+                    ${issue.status_name}
+                  </span>
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap">
+                  <span class="px-2 py-1 text-xs rounded-full" style="background-color: ${issue.priority_color}20; color: ${issue.priority_color}">
+                    ${issue.priority_name}
+                  </span>
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                  ${issue.assignee_name ? `<i class="fas fa-user mr-1"></i>${issue.assignee_name}` : '<span class="text-gray-400">未割り当て</span>'}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                  <i class="fas fa-folder mr-1"></i>${issue.project_name}
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                  ${formatDate(issue.created_at)}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `
+  } else {
+    // カード表示
+    container.innerHTML = issues.map(issue => `
+      <div class="bg-white rounded-lg shadow hover:shadow-md transition-shadow cursor-pointer" onclick="showDetail(${issue.id})">
+        <div class="p-4">
+          <div class="flex items-start justify-between">
+            <div class="flex-1">
+              <div class="flex items-center gap-2 mb-2">
+                <span class="text-sm text-gray-500">#${issue.id}</span>
+                <span class="px-2 py-1 text-xs rounded-full" style="background-color: ${issue.status_color}20; color: ${issue.status_color}">
+                  ${issue.status_name}
+                </span>
+                <span class="px-2 py-1 text-xs rounded-full" style="background-color: ${issue.priority_color}20; color: ${issue.priority_color}">
+                  ${issue.priority_name}
+                </span>
               </div>
-            ` : '<div class="text-sm text-gray-400">未割り当て</div>'}
+              <h3 class="text-lg font-semibold text-gray-900 mb-1">${escapeHtml(issue.title)}</h3>
+              ${issue.description ? `<p class="text-sm text-gray-600 line-clamp-2">${escapeHtml(issue.description)}</p>` : ''}
+            </div>
+            <div class="ml-4 text-right">
+              <div class="text-sm text-gray-600 mb-1">
+                <i class="fas fa-folder mr-1"></i>
+                ${issue.project_name}
+              </div>
+              ${issue.assignee_name ? `
+                <div class="text-sm text-gray-600">
+                  <i class="fas fa-user mr-1"></i>
+                  ${issue.assignee_name}
+                </div>
+              ` : '<div class="text-sm text-gray-400">未割り当て</div>'}
+            </div>
           </div>
-        </div>
-        <div class="flex items-center justify-between mt-3 pt-3 border-t text-xs text-gray-500">
-          <div>
-            <i class="far fa-clock mr-1"></i>
-            作成: ${formatDate(issue.created_at)}
-          </div>
-          <div>
-            <i class="fas fa-user-edit mr-1"></i>
-            報告者: ${issue.reporter_name}
+          <div class="flex items-center justify-between mt-3 pt-3 border-t text-xs text-gray-500">
+            <div>
+              <i class="far fa-clock mr-1"></i>
+              作成: ${formatDate(issue.created_at)}
+            </div>
+            <div>
+              <i class="fas fa-user-edit mr-1"></i>
+              報告者: ${issue.reporter_name}
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  `).join('')
+    `).join('')
+  }
+}
+
+// 表示モード切り替え
+function toggleViewMode(mode) {
+  viewMode = mode
+  
+  // ボタンのスタイル更新
+  document.getElementById('viewList').className = mode === 'list' 
+    ? 'px-3 py-1 rounded bg-blue-600 text-white' 
+    : 'px-3 py-1 rounded hover:bg-gray-100'
+  document.getElementById('viewCard').className = mode === 'card' 
+    ? 'px-3 py-1 rounded bg-blue-600 text-white' 
+    : 'px-3 py-1 rounded hover:bg-gray-100'
+  
+  // コンテナのスタイル更新
+  const container = document.getElementById('issuesList')
+  if (mode === 'list') {
+    container.className = ''
+  } else {
+    container.className = 'space-y-3'
+  }
+  
+  renderIssues()
 }
 
 // 案件詳細表示
